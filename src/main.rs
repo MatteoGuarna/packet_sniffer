@@ -18,7 +18,7 @@ fn main() {
 
     
     let packet = cap.next().unwrap();
-    println!("{}.{}", packet.header.ts.tv_sec, packet.header.ts.tv_usec);
+
     match PacketHeaders::from_ethernet_slice(&packet) {
         Err(value) => println!("Err {:?}", value),
         Ok(value) => {
@@ -59,4 +59,5 @@ fn main() {
             }
         }
     }
+    println!("{}.{}", packet.header.ts.tv_sec, packet.header.ts.tv_usec);
 }
