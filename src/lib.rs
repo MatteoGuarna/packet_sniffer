@@ -284,7 +284,7 @@ pub mod packet_sniffer {
                         for mut con in self.connections.clone(){
                             if con == temp_connection{
                                 con.update(temp_ts, packet.header.len);
-                                found == true;
+                                found = true;
                                 break;
                             }
                         }
