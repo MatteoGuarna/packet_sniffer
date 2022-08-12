@@ -326,7 +326,7 @@ pub mod packet_sniffer {
 
                 print!(" {0: <18} |", con.l4);
                 print!(" {0: <16} |", con.port_1);
-                print!(" {0: <11} |", con.port_1);
+                print!(" {0: <11} |", con.port_2);
                 
                 print!(" {0: <17} |", con.ts_start);
                 print!(" {0: <17} |", con.ts_end);
