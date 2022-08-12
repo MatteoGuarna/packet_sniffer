@@ -274,7 +274,7 @@ pub mod packet_sniffer {
                                 temp_port_1= h.destination_port.to_string();
                                 temp_port_2 = h.source_port.to_string();
                             }
-                            _ => ()
+                            _ => println!(" ")      //per ovviare al problema che a volte ipv6 non stampa il trasporto
                         }
                         //salviamo il vettore di connection
                         let temp_ts= sprintf!("%d.%d", packet.header.ts.tv_sec, packet.header.ts.tv_usec).unwrap();
