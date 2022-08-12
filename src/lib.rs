@@ -8,17 +8,18 @@ pub mod packet_sniffer {
     use std::sync::mpsc::{channel, Receiver, Sender};
     use std::fmt::{Display, Formatter, Result};
 
-    #[derive(PartialEq)]
+    #[derive(PartialEq,Clone)]
     enum IpV {
         V4,
         V6,
     }
     
-    #[derive(PartialEq)]
+    #[derive(PartialEq,Clone)]
     enum Transport {
         TCP,
         UDP,
     }
+    #[derive(Clone)]
     struct Connection {
         l3: IpV,
         ip_1: String,
@@ -153,7 +154,7 @@ pub mod packet_sniffer {
             };
         }
 
-        pub fn start_capture(&self) {
+        pub fn start_capture(& mut self) {
             let devs = Device::list().unwrap();
             let d = devs.get(self.dev).unwrap();
             let mut cap = d.clone().open().unwrap();
@@ -277,10 +278,10 @@ pub mod packet_sniffer {
                         }
                         //salviamo il vettore di connection
                         let temp_ts= sprintf!("%d.%d", packet.header.ts.tv_sec, packet.header.ts.tv_usec).unwrap();
-                        let temp_connection = Connection::new(temp_l3,temp_ip_1,temp_ip_2,temp_l4,temp_port_1,temp_port_2,temp_ts,temp_ts,
+                        let temp_connection = Connection::new(temp_l3,temp_ip_1,temp_ip_2,temp_l4,temp_port_1,temp_port_2,temp_ts.clone(),temp_ts.clone(),
                              packet.header.len);
                         let mut found = false;
-                        for con in self.connections{
+                        for mut con in self.connections.clone(){
                             if con == temp_connection{
                                 con.update(temp_ts, packet.header.len);
                                 found == true;
@@ -318,7 +319,7 @@ pub mod packet_sniffer {
                 "Connection End",
                 "Data Size"
             );
-            for con in self.connections {
+            for con in self.connections.clone() {
                 print!(" {0: <12} |", con.l3);
                 print!(" {0: <40} |", con.ip_1);
                 print!(" {0: <40} |", con.ip_2);
