@@ -7,19 +7,22 @@ pub mod packet_sniffer {
     use std::thread;
     use std::sync::mpsc::{channel, Receiver, Sender};
     use std::fmt::{Display, Formatter, Result};
+    use chrono::prelude::*;
+    use std::fs::File;
+    use std::io::{Write, Error};
 
-    #[derive(PartialEq,Clone)]
+    #[derive(PartialEq,Clone, Debug)]
     enum IpV {
         V4,
         V6,
     }
     
-    #[derive(PartialEq,Clone)]
+    #[derive(PartialEq,Clone, Debug)]
     enum Transport {
         TCP,
         UDP,
     }
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     struct Connection {
         l3: IpV,
         ip_1: String,
@@ -27,8 +30,8 @@ pub mod packet_sniffer {
         l4: Transport,
         port_1: String,
         port_2: String,
-        ts_start: String,
-        ts_end: String,
+        ts_start: DateTime<Local>,
+        ts_end: DateTime<Local>,
         bytes: u32,
     }
 
@@ -59,8 +62,8 @@ pub mod packet_sniffer {
             l4: u8,
             port_1: String,
             port_2: String,
-            ts_start: String,
-            ts_end: String,
+            ts_start: DateTime<Local>,
+            ts_end: DateTime<Local>,
             bytes: u32,
         ) -> Self {
             let mut ip = IpV::V4;
@@ -87,7 +90,7 @@ pub mod packet_sniffer {
             }
         }
 
-        fn update(&mut self, new_ts_end: String, new_bytes: u32) {
+        fn update(&mut self, new_ts_end: DateTime<Local>, new_bytes: u32){
             self.ts_end = new_ts_end;
             self.bytes += new_bytes;
         }
@@ -177,7 +180,7 @@ pub mod packet_sniffer {
                 s.start_time = Instant::now();
                 while ! s.pause {
                     let timer= s.time_interval.clone();
-                    let res= var.cv.wait_timeout(s, Duration::from_secs(timer.to_bits())).unwrap();
+                    let res= var.cv.wait_timeout(s, Duration::from_secs(timer as u64)).unwrap();
                     if res.1.timed_out() {
                         sender_end.send(true).unwrap();
                         return ;
@@ -209,7 +212,7 @@ pub mod packet_sniffer {
                         let mut temp_l4: u8 = 0; 
                         let mut temp_port_1 = "".to_string();
                         let mut temp_port_2 = "".to_string();
-                        
+                        if value.ip.is_none() {continue;}
                         match value.ip.unwrap() {
                             IpHeader::Version4(h, _e) => {
                                 temp_l3 = 4;
@@ -255,8 +258,10 @@ pub mod packet_sniffer {
                                     dest.unwrap(),
                                     sour.unwrap()
                                 );
-                            }
+                            },
+                            _ => ()
                         }
+                        if value.transport.is_none(){continue;}
                         match value.transport.unwrap() {
                             
                             TransportHeader::Tcp(h) => {
@@ -277,17 +282,31 @@ pub mod packet_sniffer {
                             _ => println!(" ")      //per ovviare al problema che a volte ipv6 non stampa il trasporto
                         }
                         //salviamo il vettore di connection
-                        let temp_ts= sprintf!("%d.%d", packet.header.ts.tv_sec, packet.header.ts.tv_usec).unwrap();
+                        let temp_ts= DateTime::from_local(NaiveDateTime::from_timestamp(packet.header.ts.tv_sec as i64, packet.header.ts.tv_usec as u32), *(chrono::Local::now().offset()))+*(chrono::Local::now().offset());
+              
                         let temp_connection = Connection::new(temp_l3,temp_ip_1,temp_ip_2,temp_l4,temp_port_1,temp_port_2,temp_ts.clone(),temp_ts.clone(),
                              packet.header.len);
                         let mut found = false;
-                        for mut con in self.connections.clone(){
-                            if con == temp_connection{
-                                con.update(temp_ts, packet.header.len);
+                        let mut i: usize=0;
+                        while i < self.connections.len() {
+                            if self.connections[i] == temp_connection{
+                                //println!("Connection before: {:?}", self.connections[i]);
+                                self.connections[i].update(temp_ts, packet.header.len);
+                                println!("Connection after: {:?}", self.connections[i]);
                                 found = true;
                                 break;
                             }
+                            i+=1;
                         }
+                        /*for con in self.connections.as_slice(){
+                            if *con == temp_connection{
+                                println!("Connection before: {:?}", con);
+                                (*con).update(temp_ts, packet.header.len);
+                                println!("Connection after: {:?}", con);
+                                found = true;
+                                break;
+                            }
+                        }*/
                         if !found {
                             self.connections.push(temp_connection);
                         }
@@ -297,6 +316,7 @@ pub mod packet_sniffer {
             }
             println!("Work done!");
             t.join().unwrap();
+            self.print_connection();
         }
 
         fn pause_capture(&self) {
@@ -305,33 +325,36 @@ pub mod packet_sniffer {
 
         //stampa temporanea su linea di comando
         pub fn print_connection(&self){
-            println!(" ");
-            println!(" ");
-            println!(
-                "{0: <12} | {1: <40} | {2: <40} | {3: <18} | {4: <15} | {5: <11} | {6: <17} | {7: <17} | {8: <10}",
-                "IP Protocol",
-                "Destination IP",
-                "Source IP",
-                "Transport Protocol",
-                "Destination Port",
-                "Source Port", 
-                "Connection Start",
-                "Connection End",
-                "Data Size"
-            );
-            for con in self.connections.clone() {
-                print!(" {0: <12} |", con.l3);
-                print!(" {0: <40} |", con.ip_1);
-                print!(" {0: <40} |", con.ip_2);
+            let mut writer= File::create(self.file_name.clone()).unwrap();
 
-                print!(" {0: <18} |", con.l4);
-                print!(" {0: <16} |", con.port_1);
-                print!(" {0: <11} |", con.port_2);
-                
-                print!(" {0: <17} |", con.ts_start);
-                print!(" {0: <17} |", con.ts_end);
-                print!(" {0: <17} |", con.bytes);
-               
+         
+            let mut i = 1;
+            writeln!(writer, " WIRECATFISH packet capture\n").unwrap();
+            writeln!(writer, "| N°   | {0: <11} | {1: <40} | {2: <40} | {3: <18} | {4: <15} | {5: <11} | {6: <19} | {7: <19} | {8: <24} |",
+            "IP Protocol",
+            "Destination IP",
+            "Source IP",
+            "Transport Protocol",
+            "Destination Port",
+            "Source Port", 
+            "Connection Start",
+            "Connection End ",
+            "Data Trasmitted (Bytes)").unwrap();
+
+            for con in self.connections.clone() {
+                writeln!(writer, "| {0: <4} | {1}        | {2: <40} | {3: <40} | {4}                | {5: <16} | {6: <11} | {7: <19} | {8: <19} | {9: <24} |",
+                i,
+                con.l3,
+                con.ip_1,
+                con.ip_2,
+                con.l4,
+                con.port_1,
+                con.port_2, 
+                con.ts_start.format("%Y/%m/%d %H:%M:%S"),
+                con.ts_end.format("%Y/%m/%d %H:%M:%S"),
+                con.bytes
+            ).unwrap();
+            i+=1;
             }
         }
     }
