@@ -9,7 +9,7 @@ pub mod packet_sniffer {
     use std::fmt::{Display, Formatter, Result};
     use chrono::prelude::*;
     use std::fs::File;
-    use std::io::{Write, Error};
+    use std::io::{Write, stdin, stdout};
 
     #[derive(PartialEq,Clone, Debug)]
     enum IpV {
@@ -48,12 +48,11 @@ pub mod packet_sniffer {
         fn fmt(&self, f: &mut Formatter) -> Result{
             match *self {
                 Transport::TCP => write!(f, "TCP"),
-                Transport::UDP => write!(f, "UDP")
+                Transport::UDP => write!(f, "UDP"),
             }
         }
     }
     
-
     impl Connection {
         fn new(
             l3: u8,
@@ -73,7 +72,7 @@ pub mod packet_sniffer {
             }
 
             let mut t = Transport::TCP;
-            if l4 != 0 {
+            if l4 == 1 {
                 t = Transport::UDP;
             }
 
@@ -114,7 +113,6 @@ pub mod packet_sniffer {
             }
         }
     }
-    
     struct Status{
         time_interval: f64,
         start_time: Instant,
@@ -162,7 +160,7 @@ pub mod packet_sniffer {
             let d = devs.get(self.dev).unwrap();
             let mut cap = d.clone().open().unwrap();
 
-            println!(
+           /* println!(
                 "{0: <12} | {1: <40} | {2: <40} | {3: <18} | {4: <15} | {5: <11}",
                 "IP Protocol",
                 "Destination IP",
@@ -170,49 +168,108 @@ pub mod packet_sniffer {
                 "Transport Protocol",
                 "Destination Port",
                 "Source Port"
-            );
+            );*/
             
-            let (sender_end, receiver_end) : (Sender<bool>, Receiver<bool>) = channel();
+            let (sender_end, receiver_end) : (Sender<String>, Receiver<String>) = channel();
             
             let var= Arc::clone(&self.waiter);
+            //TIMER THREAD
             let t=thread::spawn(move || {
-                let mut s= var.state.lock().unwrap();
-                s.start_time = Instant::now();
-                while ! s.pause {
-                    let timer= s.time_interval.clone();
-                    let res= var.cv.wait_timeout(s, Duration::from_secs(timer as u64)).unwrap();
-                    if res.1.timed_out() {
-                        sender_end.send(true).unwrap();
-                        return ;
+                let w = Arc::clone(&var);
+                let _user= thread::spawn(move || {
+                    let mut cmd= String::new();
+                    loop{
+                        cmd.clear();
+                        print!("> ");
+                        stdout().flush().unwrap();
+                        stdin().read_line(&mut cmd).unwrap();
+                        let r= cmd.trim();
+
+                        match r {
+                            "p" => {
+                                let mut res= w.state.lock().unwrap();
+                                res.pause = true;
+                                w.cv.notify_all();
+                                drop(res);
+
+                            },
+                            "r" => {
+                                let mut res= w.state.lock().unwrap();
+                                res.pause = false;
+                                w.cv.notify_all();
+                                drop(res);
+                            }
+                             _ => ()
+                        }
                     }
-                    s = res.0;
+
+                });
+                
+                loop {
+                    let mut s= var.state.lock().unwrap();
+                    while s.pause {
+                        s= var.cv.wait(s).unwrap();
+                    }
+                    sender_end.send(String::from("resume")).unwrap();
+                    s.start_time = Instant::now();
+
+
+                    while ! s.pause {
+                        let timer= s.time_interval.clone();
+                        let res= var.cv.wait_timeout(s, Duration::from_secs(timer as u64)).unwrap();
+                        if res.1.timed_out() {
+                            sender_end.send(String::from("timeout")).unwrap();
+                            return ;
+                        }
+                        s = res.0;
+                    }
+
+                    s.pause_time=Instant::now();
+                    s.time_interval -= (s.pause_time-s.start_time).as_secs_f64();
+
+                    sender_end.send(String::from("pause")).unwrap();
                 }
-                s.pause_time=Instant::now();
-                s.time_interval=(s.pause_time-s.start_time).as_secs_f64();
-                sender_end.send(true).unwrap();
             });
-            /*
-            loop {
-                let mut packet = cap.next().unwrap();
-                match packet {
-
-                }
-            }*/
-
+            
             while let Ok(packet) = cap.next() {
-                if receiver_end.try_recv().is_ok(){
-                    break;
-                }
+                match receiver_end.try_recv() {
+                        Ok(val) => {
+                            match val.as_str(){
+                                "timeout" => break,
+                                "pause" => {
+                                    self.print_connection();
+                                    print!("prova.txt printed, work paused!\n> ");
+                                    stdout().flush().unwrap();
+                                    let r = receiver_end.recv().unwrap();
+                                    match r.as_str(){
+                                        "resume" => {
+                                                print!("RESUME!\n> ");
+                                                stdout().flush().unwrap();
+                                        }
+                                        _ => ()
+                                    }
+                                },
+                                _ => ()
+                            }
+
+                        },
+                        _ => ()
+                    }
+                
                 match PacketHeaders::from_ethernet_slice(&packet) {
                     Err(value) => println!("Err {:?}", value),
                     Ok(value) => {
                         let mut temp_l3: u8 = 6;
+                        #[allow(unused_assignments)]
                         let mut temp_ip_1  = "".to_string();
+                        #[allow(unused_assignments)]
                         let mut temp_ip_2 = "".to_string();
                         let mut temp_l4: u8 = 0; 
+                        #[allow(unused_assignments)]
                         let mut temp_port_1 = "".to_string();
+                        #[allow(unused_assignments)]
                         let mut temp_port_2 = "".to_string();
-                        if value.ip.is_none() {continue;}
+                        if value.ip.is_none() { continue; }
                         match value.ip.unwrap() {
                             IpHeader::Version4(h, _e) => {
                                 temp_l3 = 4;
@@ -232,12 +289,6 @@ pub mod packet_sniffer {
                                     h.source[3]
                                 );
                                 temp_ip_2 = sour.clone().unwrap();
-                                print!(
-                                    "{0: <12} | {1:<40} | {2:<40} |",
-                                    "IPv4",
-                                    dest.unwrap(),
-                                    sour.unwrap()
-                                );
                             }
                             IpHeader::Version6(h, _e) => {
                                 let dest = sprintf!("%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x", 
@@ -252,34 +303,20 @@ pub mod packet_sniffer {
                                     h.source[8],h.source[9],h.source[10],h.source[11],
                                     h.source[12],h.source[13],h.source[14],h.source[15]);
                                     temp_ip_2 = sour.clone().unwrap();
-                                print!(
-                                    "{0: <12} | {1:<40} | {2:<40} |",
-                                    "IPv6",
-                                    dest.unwrap(),
-                                    sour.unwrap()
-                                );
                             },
-                            _ => ()
                         }
                         if value.transport.is_none(){continue;}
                         match value.transport.unwrap() {
-                            
                             TransportHeader::Tcp(h) => {
-                                print!(" {0: <18} |", "TCP");
-                                print!(" {0: <16} |", h.destination_port);
-                                println!(" {0: <11} |", h.source_port);
                                 temp_port_1= h.destination_port.to_string();
                                 temp_port_2 = h.source_port.to_string();
                             }
                             TransportHeader::Udp(h) => {
                                 temp_l4 = 1;
-                                print!(" {0: <18} |", "UDP");
-                                print!(" {0: <16} |", h.destination_port);
-                                println!(" {0: <11}", h.source_port);
                                 temp_port_1= h.destination_port.to_string();
                                 temp_port_2 = h.source_port.to_string();
                             }
-                            _ => println!(" ")      //per ovviare al problema che a volte ipv6 non stampa il trasporto
+                            _ => continue
                         }
                         //salviamo il vettore di connection
                         let temp_ts= DateTime::from_local(NaiveDateTime::from_timestamp(packet.header.ts.tv_sec as i64, packet.header.ts.tv_usec as u32), *(chrono::Local::now().offset()))+*(chrono::Local::now().offset());
@@ -290,9 +327,7 @@ pub mod packet_sniffer {
                         let mut i: usize=0;
                         while i < self.connections.len() {
                             if self.connections[i] == temp_connection{
-                                //println!("Connection before: {:?}", self.connections[i]);
                                 self.connections[i].update(temp_ts, packet.header.len);
-                                println!("Connection after: {:?}", self.connections[i]);
                                 found = true;
                                 break;
                             }
@@ -312,18 +347,16 @@ pub mod packet_sniffer {
                         }
                     }
                 }
-                //println!("{}.{}", packet.header.ts.tv_sec, packet.header.ts.tv_usec);
             }
             println!("Work done!");
             t.join().unwrap();
             self.print_connection();
         }
 
-        fn pause_capture(&self) {
+        /*fn pause_capture(&self) {
             
-        }
+        }*/
 
-        //stampa temporanea su linea di comando
         pub fn print_connection(&self){
             let mut writer= File::create(self.file_name.clone()).unwrap();
 
