@@ -1,6 +1,6 @@
 pub mod packet_sniffer {
     use etherparse::{IpHeader, PacketHeaders, TransportHeader};
-    use pcap::Device;
+    use pcap::{Device,Capture};
     use sprintf::sprintf;
     use std::sync::{Condvar, Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -11,6 +11,20 @@ pub mod packet_sniffer {
     use std::fs::File;
     use std::io::{Write, stdin, stdout};
 
+    #[derive(Debug)]
+    pub enum SnifferError {
+        DevicesListImpossibleToGet,
+        DeviceNotFound,
+    }
+    impl Display for SnifferError {
+        fn fmt(&self, f: &mut Formatter) -> Result{
+            match *self {
+                SnifferError::DeviceNotFound => write!(f, "Device not found"),
+                SnifferError::DevicesListImpossibleToGet => write!(f, "No devices available")
+            }
+        }
+    }
+    
     #[derive(PartialEq,Clone, Debug)]
     enum IpV {
         V4,
@@ -124,6 +138,7 @@ pub mod packet_sniffer {
         state: Mutex<Status>,
         cv: Condvar
     }
+   
     
     pub struct Sniffer{
         file_name: String,
@@ -133,7 +148,7 @@ pub mod packet_sniffer {
     }
 
     impl Sniffer {
-        pub fn new(file_name: String, dev: usize, time_interval: f64) -> Self {
+        pub fn new(file_name: String, dev: usize, time_interval: f64) -> std::result::Result<Self, SnifferError> {
             
             let s= Mutex::new(Status{
                 time_interval,
@@ -147,28 +162,32 @@ pub mod packet_sniffer {
                 cv: Condvar::new()    
             });
             
-            return Sniffer {
+
+            match Device::list() {
+                Err(_e) => return Err(SnifferError::DevicesListImpossibleToGet),
+                Ok(devs) => {
+                    if devs.len() < dev {
+                        return Err(SnifferError::DeviceNotFound)
+                    }
+                }
+            }
+
+            return Ok(Sniffer {
                 file_name,
                 dev,
                 connections: vec![],
                 waiter: wait
-            };
+            });
         }
 
         pub fn start_capture(& mut self) {
             let devs = Device::list().unwrap();
             let d = devs.get(self.dev).unwrap();
-            let mut cap = d.clone().open().unwrap();
-
-           /* println!(
-                "{0: <12} | {1: <40} | {2: <40} | {3: <18} | {4: <15} | {5: <11}",
-                "IP Protocol",
-                "Destination IP",
-                "Source IP",
-                "Transport Protocol",
-                "Destination Port",
-                "Source Port"
-            );*/
+            //let mut cap = d.clone().open().unwrap();
+            let mut cap = Capture::from_device(d.name.as_str()).unwrap()
+                        .promisc(true).timeout(500) //aggiunto timeout di 0.5s
+                        .open().unwrap();
+            
             
             let (sender_end, receiver_end) : (Sender<String>, Receiver<String>) = channel();
             
@@ -176,6 +195,7 @@ pub mod packet_sniffer {
             //TIMER THREAD
             let t=thread::spawn(move || {
                 let w = Arc::clone(&var);
+                //USER COMMAND THREAD
                 let _user= thread::spawn(move || {
                     let mut cmd= String::new();
                     loop{
@@ -231,123 +251,131 @@ pub mod packet_sniffer {
                 }
             });
             
-            while let Ok(packet) = cap.next() {
+            //creato questo loop perché il while Ok(cap.next()) usciva dal ciclo quando trovava un errore in pacchetto e non permetteva la synch
+            loop {
+                ///////////questo match lo abbiamo messo prima di cap.next
                 match receiver_end.try_recv() {
-                        Ok(val) => {
-                            match val.as_str(){
-                                "timeout" => break,
-                                "pause" => {
-                                    self.print_connection();
-                                    print!("prova.txt printed, work paused!\n> ");
-                                    stdout().flush().unwrap();
-                                    let r = receiver_end.recv().unwrap();
-                                    match r.as_str(){
-                                        "resume" => {
-                                                print!("RESUME!\n> ");
-                                                stdout().flush().unwrap();
-                                        }
-                                        _ => ()
+                    Ok(val) => {
+                        match val.as_str(){
+                            "timeout" => break,
+                            "pause" => {
+                                self.print_connection();
+                                print!("prova.txt printed, work paused!\n> ");
+                                stdout().flush().unwrap();
+                                let r = receiver_end.recv().unwrap();
+                                match r.as_str(){
+                                    "resume" => {
+                                            print!("RESUME!\n> ");
+                                            stdout().flush().unwrap();
                                     }
-                                },
-                                _ => ()
-                            }
-
-                        },
-                        _ => ()
-                    }
-                
-                match PacketHeaders::from_ethernet_slice(&packet) {
-                    Err(value) => println!("Err {:?}", value),
-                    Ok(value) => {
-                        let mut temp_l3: u8 = 6;
-                        #[allow(unused_assignments)]
-                        let mut temp_ip_1  = "".to_string();
-                        #[allow(unused_assignments)]
-                        let mut temp_ip_2 = "".to_string();
-                        let mut temp_l4: u8 = 0; 
-                        #[allow(unused_assignments)]
-                        let mut temp_port_1 = "".to_string();
-                        #[allow(unused_assignments)]
-                        let mut temp_port_2 = "".to_string();
-                        if value.ip.is_none() { continue; }
-                        match value.ip.unwrap() {
-                            IpHeader::Version4(h, _e) => {
-                                temp_l3 = 4;
-                                let dest = sprintf!(
-                                    "%d.%d.%d.%d",
-                                    h.destination[0],
-                                    h.destination[1],
-                                    h.destination[2],
-                                    h.destination[3]
-                                );
-                                temp_ip_1 = dest.clone().unwrap();
-                                let sour = sprintf!(
-                                    "%d.%d.%d.%d",
-                                    h.source[0],
-                                    h.source[1],
-                                    h.source[2],
-                                    h.source[3]
-                                );
-                                temp_ip_2 = sour.clone().unwrap();
-                            }
-                            IpHeader::Version6(h, _e) => {
-                                let dest = sprintf!("%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x", 
-                                    h.destination[0],h.destination[1],h.destination[2],h.destination[3],
-                                    h.destination[4],h.destination[5],h.destination[6],h.destination[7],
-                                    h.destination[8],h.destination[9],h.destination[10],h.destination[11],
-                                    h.destination[12],h.destination[13],h.destination[14],h.destination[15]);
-                                    temp_ip_1 = dest.clone().unwrap();
-                                let sour = sprintf!("%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
-                                    h.source[0],h.source[1],h.source[2],h.source[3],
-                                    h.source[4],h.source[5],h.source[6],h.source[7],
-                                    h.source[8],h.source[9],h.source[10],h.source[11],
-                                    h.source[12],h.source[13],h.source[14],h.source[15]);
-                                    temp_ip_2 = sour.clone().unwrap();
+                                    _ => ()
+                                }
                             },
+                            _ => ()
                         }
-                        if value.transport.is_none(){continue;}
-                        match value.transport.unwrap() {
-                            TransportHeader::Tcp(h) => {
-                                temp_port_1= h.destination_port.to_string();
-                                temp_port_2 = h.source_port.to_string();
+
+                    },
+                    _ => ()
+                }
+
+                match cap.next() {
+                    Ok(packet) => {
+                        match PacketHeaders::from_ethernet_slice(&packet) {
+                            Err(value) => println!("Err {:?}", value),
+                            Ok(value) => {
+                                let mut temp_l3: u8 = 6;
+                                #[allow(unused_assignments)]
+                                let mut temp_ip_1  = "".to_string();
+                                #[allow(unused_assignments)]
+                                let mut temp_ip_2 = "".to_string();
+                                let mut temp_l4: u8 = 0; 
+                                #[allow(unused_assignments)]
+                                let mut temp_port_1 = "".to_string();
+                                #[allow(unused_assignments)]
+                                let mut temp_port_2 = "".to_string();
+                                if value.ip.is_none() { continue; }
+                                match value.ip.unwrap() {
+                                    IpHeader::Version4(h, _e) => {
+                                        temp_l3 = 4;
+                                        let dest = sprintf!(
+                                            "%d.%d.%d.%d",
+                                            h.destination[0],
+                                            h.destination[1],
+                                            h.destination[2],
+                                            h.destination[3]
+                                        );
+                                        temp_ip_1 = dest.clone().unwrap();
+                                        let sour = sprintf!(
+                                            "%d.%d.%d.%d",
+                                            h.source[0],
+                                            h.source[1],
+                                            h.source[2],
+                                            h.source[3]
+                                        );
+                                        temp_ip_2 = sour.clone().unwrap();
+                                    }
+                                    IpHeader::Version6(h, _e) => {
+                                        let dest = sprintf!("%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x", 
+                                            h.destination[0],h.destination[1],h.destination[2],h.destination[3],
+                                            h.destination[4],h.destination[5],h.destination[6],h.destination[7],
+                                            h.destination[8],h.destination[9],h.destination[10],h.destination[11],
+                                            h.destination[12],h.destination[13],h.destination[14],h.destination[15]);
+                                            temp_ip_1 = dest.clone().unwrap();
+                                        let sour = sprintf!("%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
+                                            h.source[0],h.source[1],h.source[2],h.source[3],
+                                            h.source[4],h.source[5],h.source[6],h.source[7],
+                                            h.source[8],h.source[9],h.source[10],h.source[11],
+                                            h.source[12],h.source[13],h.source[14],h.source[15]);
+                                            temp_ip_2 = sour.clone().unwrap();
+                                    },
+                                }
+                                if value.transport.is_none(){continue;}
+                                match value.transport.unwrap() {
+                                    TransportHeader::Tcp(h) => {
+                                        temp_port_1= h.destination_port.to_string();
+                                        temp_port_2 = h.source_port.to_string();
+                                    }
+                                    TransportHeader::Udp(h) => {
+                                        temp_l4 = 1;
+                                        temp_port_1= h.destination_port.to_string();
+                                        temp_port_2 = h.source_port.to_string();
+                                    }
+                                    _ => continue
+                                }
+                                //salviamo il vettore di connection
+                                let temp_ts= DateTime::from_local(NaiveDateTime::from_timestamp(packet.header.ts.tv_sec as i64, packet.header.ts.tv_usec as u32), *(chrono::Local::now().offset()))+*(chrono::Local::now().offset());
+                    
+                                let temp_connection = Connection::new(temp_l3,temp_ip_1,temp_ip_2,temp_l4,temp_port_1,temp_port_2,temp_ts.clone(),temp_ts.clone(),
+                                    packet.header.len);
+                                let mut found = false;
+                                let mut i: usize=0;
+                                while i < self.connections.len() {
+                                    if self.connections[i] == temp_connection{
+                                        self.connections[i].update(temp_ts, packet.header.len);
+                                        found = true;
+                                        break;
+                                    }
+                                    i+=1;
+                                }
+                                /*for con in self.connections.as_slice(){
+                                    if *con == temp_connection{
+                                        println!("Connection before: {:?}", con);
+                                        (*con).update(temp_ts, packet.header.len);
+                                        println!("Connection after: {:?}", con);
+                                        found = true;
+                                        break;
+                                    }
+                                }*/
+                                if !found {
+                                    self.connections.push(temp_connection);
+                                }
                             }
-                            TransportHeader::Udp(h) => {
-                                temp_l4 = 1;
-                                temp_port_1= h.destination_port.to_string();
-                                temp_port_2 = h.source_port.to_string();
-                            }
-                            _ => continue
                         }
-                        //salviamo il vettore di connection
-                        let temp_ts= DateTime::from_local(NaiveDateTime::from_timestamp(packet.header.ts.tv_sec as i64, packet.header.ts.tv_usec as u32), *(chrono::Local::now().offset()))+*(chrono::Local::now().offset());
-              
-                        let temp_connection = Connection::new(temp_l3,temp_ip_1,temp_ip_2,temp_l4,temp_port_1,temp_port_2,temp_ts.clone(),temp_ts.clone(),
-                             packet.header.len);
-                        let mut found = false;
-                        let mut i: usize=0;
-                        while i < self.connections.len() {
-                            if self.connections[i] == temp_connection{
-                                self.connections[i].update(temp_ts, packet.header.len);
-                                found = true;
-                                break;
-                            }
-                            i+=1;
-                        }
-                        /*for con in self.connections.as_slice(){
-                            if *con == temp_connection{
-                                println!("Connection before: {:?}", con);
-                                (*con).update(temp_ts, packet.header.len);
-                                println!("Connection after: {:?}", con);
-                                found = true;
-                                break;
-                            }
-                        }*/
-                        if !found {
-                            self.connections.push(temp_connection);
-                        }
-                    }
+                    },
+                    _ => (),
                 }
             }
+            
             println!("Work done!");
             t.join().unwrap();
             self.print_connection();
