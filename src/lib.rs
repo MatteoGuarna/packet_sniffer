@@ -15,12 +15,16 @@ pub mod packet_sniffer {
     pub enum SnifferError {
         DevicesListImpossibleToGet,
         DeviceNotFound,
+        InvalidFilter,
+        OpenErrorCapture,
     }
     impl Display for SnifferError {
         fn fmt(&self, f: &mut Formatter) -> Result{
             match *self {
                 SnifferError::DeviceNotFound => write!(f, "Device not found"),
-                SnifferError::DevicesListImpossibleToGet => write!(f, "No devices available")
+                SnifferError::DevicesListImpossibleToGet => write!(f, "No devices available"),
+                SnifferError::InvalidFilter => write!(f, "Invalid Filter: correct syntax is available at https://biot.com/capstats/bpf.html"),
+                SnifferError::OpenErrorCapture => write!(f, "Impossible to open capture for the selected device "),
             }
         }
     }
@@ -143,12 +147,13 @@ pub mod packet_sniffer {
     pub struct Sniffer{
         file_name: String,
         dev: usize,
+        filter: String,
         connections: Vec<Connection>,
         waiter: Arc<Waiting>
     }
 
     impl Sniffer {
-        pub fn new(file_name: String, dev: usize, time_interval: f64) -> std::result::Result<Self, SnifferError> {
+        pub fn new(file_name: String, dev: usize, time_interval: f64, filter: String) -> std::result::Result<Self, SnifferError> {
             
             let s= Mutex::new(Status{
                 time_interval,
@@ -166,48 +171,52 @@ pub mod packet_sniffer {
             match Device::list() {
                 Err(_e) => return Err(SnifferError::DevicesListImpossibleToGet),
                 Ok(devs) => {
-                    if devs.len() < dev {
+                    if devs.len() <= dev {
                         return Err(SnifferError::DeviceNotFound)
-                    }
+                    } 
                 }
             }
 
             return Ok(Sniffer {
                 file_name,
                 dev,
+                filter,
                 connections: vec![],
                 waiter: wait
             });
         }
 
-        pub fn start_capture(& mut self) {
+        pub fn start_capture(& mut self) -> std::result::Result<(), SnifferError>{
             let devs = Device::list().unwrap();
             let d = devs.get(self.dev).unwrap();
             //let mut cap = d.clone().open().unwrap();
             let mut cap = Capture::from_device(d.name.as_str()).unwrap()
                         .promisc(true).timeout(500) //aggiunto timeout di 0.5s
-                        .open().unwrap();
+                        .open().map_err(|_| SnifferError::OpenErrorCapture)?;
+            cap.filter(&self.filter, true).map_err(|_| SnifferError::InvalidFilter)?;
             
             
             let (sender_end, receiver_end) : (Sender<String>, Receiver<String>) = channel();
-            
             let var= Arc::clone(&self.waiter);
             //TIMER THREAD
             let t=thread::spawn(move || {
                 let w = Arc::clone(&var);
                 //USER COMMAND THREAD
-                let _user= thread::spawn(move || {
+                thread::spawn(move || {
                     let mut cmd= String::new();
                     loop{
                         cmd.clear();
                         print!("> ");
-                        stdout().flush().unwrap();
-                        stdin().read_line(&mut cmd).unwrap();
+                        stdout().flush().expect("Error flushing stdout buffer");
+                        match stdin().read_line(&mut cmd){
+                            Ok(_val) => (),
+                            Err(e) => {eprintln!("{}", e); continue}
+                        }
                         let r= cmd.trim();
-
                         match r {
                             "p" => {
                                 let mut res= w.state.lock().unwrap();
+                                if res.pause {drop(res); continue;}
                                 res.pause = true;
                                 w.cv.notify_all();
                                 drop(res);
@@ -215,6 +224,7 @@ pub mod packet_sniffer {
                             },
                             "r" => {
                                 let mut res= w.state.lock().unwrap();
+                                if !res.pause {drop(res); continue;}
                                 res.pause = false;
                                 w.cv.notify_all();
                                 drop(res);
@@ -232,7 +242,6 @@ pub mod packet_sniffer {
                     }
                     sender_end.send(String::from("resume")).unwrap();
                     s.start_time = Instant::now();
-
 
                     while ! s.pause {
                         let timer= s.time_interval.clone();
@@ -329,7 +338,7 @@ pub mod packet_sniffer {
                                             temp_ip_2 = sour.clone().unwrap();
                                     },
                                 }
-                                if value.transport.is_none(){continue;}
+                                if value.transport.is_none(){ continue; }
                                 match value.transport.unwrap() {
                                     TransportHeader::Tcp(h) => {
                                         temp_port_1= h.destination_port.to_string();
@@ -379,6 +388,7 @@ pub mod packet_sniffer {
             println!("Work done!");
             t.join().unwrap();
             self.print_connection();
+            return Ok(());
         }
 
         /*fn pause_capture(&self) {
@@ -393,17 +403,17 @@ pub mod packet_sniffer {
             writeln!(writer, " WIRECATFISH packet capture\n").unwrap();
             writeln!(writer, "| N°   | {0: <11} | {1: <40} | {2: <40} | {3: <18} | {4: <15} | {5: <11} | {6: <19} | {7: <19} | {8: <24} |",
             "IP Protocol",
-            "Destination IP",
-            "Source IP",
+            "Address A",
+            "Address B",
             "Transport Protocol",
-            "Destination Port",
-            "Source Port", 
+            "Port A",
+            "Port B", 
             "Connection Start",
             "Connection End ",
             "Data Trasmitted (Bytes)").unwrap();
 
             for con in self.connections.clone() {
-                writeln!(writer, "| {0: <4} | {1}        | {2: <40} | {3: <40} | {4}                | {5: <16} | {6: <11} | {7: <19} | {8: <19} | {9: <24} |",
+                writeln!(writer, "| {0: <4} | {1}        | {2: <40} | {3: <40} | {4}                | {5: <15} | {6: <11} | {7: <19} | {8: <19} | {9: <24} |",
                 i,
                 con.l3,
                 con.ip_1,
