@@ -12,8 +12,7 @@ pub mod packet_sniffer {
     //! sniffer.start_capture();
     //! ```
     //! The result of the capture is stored in your working folder
-    //! ```
-    //! ```
+    //! #
     //! It is possible to pause and resume the capture through the command line
     //! 
     use etherparse::{IpHeader, PacketHeaders, TransportHeader};
@@ -29,7 +28,11 @@ pub mod packet_sniffer {
     use std::io::{Write, stdin, stdout};
 
     /// This enum provides the different errors that can happen inside the sniffer mod
-    /// 
+    /// ## Properties
+    /// * `DevicesListImpossibleToGet`: Impossible to get the devices list
+    /// * `DeviceNotFound`: Inserted device not found
+    /// * `InvalidFilter`: Invalid Filter: correct syntax is available at <https://biot.com/capstats/bpf.html>
+    /// * `OpenErrorCapture` Impossible to open capture for the selected device:
     #[derive(Debug)]
     pub enum SnifferError {
         DevicesListImpossibleToGet,
@@ -192,7 +195,7 @@ pub mod packet_sniffer {
     /// ## Properties
     /// * `file_name`: The name of the file (or the absolute or relative path) where the result of the capture is going to be printed
     /// * `dev`: Device identification number [an integer value ranging from 0 onwards which corresponde to a newtwork device interface]
-    /// * `filter`: A filter (syntax is available at https://biot.com/capstats/bpf.html)
+    /// * `filter`: A filter (syntax is available at <https://biot.com/capstats/bpf.html>)
     /// * `connections`: A vector of Connections
     /// * `waiter`: Synchronization variable
     pub struct Sniffer{
@@ -209,7 +212,7 @@ pub mod packet_sniffer {
         /// * `file_name`: The name of the file (or the absolute or relative path) where the result of the capture is going to be printed
         /// * `dev`: Device identification number [an integer value ranging from 0 onwards which corresponds to a network device interface]
         /// * `time_interval`: Sniffing Duration (secs)
-        /// * `filter`: A filter (syntax is available at https://biot.com/capstats/bpf.html),
+        /// * `filter`: (OPTIONAL) A filter (syntax is available at <https://biot.com/capstats/bpf.html>),
         /// #
         /// Please notice that the result of the capture is going stored in your working folder, unless a path is provided
         pub fn new(file_name: String, dev: usize, time_interval: f64, filter: String) -> std::result::Result<Self, SnifferError> {
