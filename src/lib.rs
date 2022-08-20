@@ -465,7 +465,7 @@ pub mod packet_sniffer {
         }
 
         
-        /// print_connection creates o overwrite a file writing the result of sniffing
+        /// print_connection creates or overwrites a file writing the result of sniffing
         pub fn print_connection(&self){
             let mut writer= File::create(self.file_name.clone()).unwrap();
 
