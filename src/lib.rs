@@ -1,4 +1,21 @@
 pub mod packet_sniffer {
+    //! packet_sniffer is a module cross-platform which allows to capture, analyze and filter packet 
+    //! connections from a network device.
+    //! # How to use packet_sniffer
+    //! To create a new `packet_sniffer` object simply call the constructor
+    //! ```
+    //! let sniffer = Sniffer::new(file_name, network_device_number, time_interval, filter);
+    //! ```
+    //! #
+    //! To start capturing the network traffic use the [`start_capture`] function
+    //! ```
+    //! sniffer.start_capture();
+    //! ```
+    //! The result of the capture is stored in your working folder
+    //! ```
+    //! ```
+    //! It is possible to pause and resume the capture through the command line
+    //! 
     use etherparse::{IpHeader, PacketHeaders, TransportHeader};
     use pcap::{Device,Capture};
     use sprintf::sprintf;
@@ -11,6 +28,8 @@ pub mod packet_sniffer {
     use std::fs::File;
     use std::io::{Write, stdin, stdout};
 
+    /// This enum provides the different errors that can happen inside the sniffer mod
+    /// 
     #[derive(Debug)]
     pub enum SnifferError {
         DevicesListImpossibleToGet,
@@ -29,17 +48,19 @@ pub mod packet_sniffer {
         }
     }
     
+    /// This enum provides the two version of an IP Packet
     #[derive(PartialEq,Clone, Debug)]
     enum IpV {
         V4,
         V6,
     }
-    
+    /// This enum provides the two type of the Trasport Layer
     #[derive(PartialEq,Clone, Debug)]
     enum Transport {
         TCP,
         UDP,
     }
+    /// This struct identify a connection by IP addresses, ports and layer 3-4 protocols
     #[derive(Clone, Debug)]
     struct Connection {
         l3: IpV,
@@ -72,6 +93,16 @@ pub mod packet_sniffer {
     }
     
     impl Connection {
+        /// Create an istance of a Connection
+        /// ## Parameters
+        /// * `l3`: layer 3 protocol
+        /// * `ip_1`: IP Address A
+        /// * `ip_2`: IP Address B
+        /// * `port_1`: Port A,
+        /// * `port_2`: Port B,
+        /// * `ts_start`: Initial Timestamp
+        /// * `ts_end`: Final Timestamp
+        /// * `bytes`: Cumulative bytes exchanged by the connection
         fn new(
             l3: u8,
             ip_1: String,
@@ -107,6 +138,10 @@ pub mod packet_sniffer {
             }
         }
 
+        /// Update an istance of a Connection
+        /// ## Parameters
+        /// * `new_ts_end`: New final Timestamp
+        /// * `new_bytes`: New bytes to add in the Connection
         fn update(&mut self, new_ts_end: DateTime<Local>, new_bytes: u32){
             self.ts_end = new_ts_end;
             self.bytes += new_bytes;
@@ -131,6 +166,12 @@ pub mod packet_sniffer {
             }
         }
     }
+    /// This struct defines the status of the Sniffer
+    /// ## Properties
+    /// * `time_interval`: Execute time of the Sniffer
+    /// * `start_time`: Time the sniffer starts / resume to capture
+    /// * `pause_time`: Time the sniffer pause the capturing
+    /// * `pause`: Pause flag
     struct Status{
         time_interval: f64,
         start_time: Instant,
@@ -138,21 +179,39 @@ pub mod packet_sniffer {
         pause: bool,
     }
     
+    /// This struct defines the synchronization variables used by the Sniffer
+    /// ## Properties
+    /// * `state`: Status of the Sniffer contained in a Mutex lock, even used with the cv
+    /// * `cv`: Condition Variable
     struct Waiting{
         state: Mutex<Status>,
         cv: Condvar
     }
    
-    
+    /// This struct defines the Sniffer
+    /// ## Properties
+    /// * `file_name`: The name of the file (or the absolute or relative path) where the result of the capture is going to be printed
+    /// * `dev`: Device identification number [an integer value ranging from 0 onwards which corresponde to a newtwork device interface]
+    /// * `filter`: A filter (syntax is available at https://biot.com/capstats/bpf.html)
+    /// * `connections`: A vector of Connections
+    /// * `waiter`: Synchronization variable
     pub struct Sniffer{
         file_name: String,
-        dev: usize,
+        dev: String,
         filter: String,
         connections: Vec<Connection>,
         waiter: Arc<Waiting>
     }
 
     impl Sniffer {
+        /// Creates an istance of Sniffer
+        /// ## Parameters
+        /// * `file_name`: The name of the file (or the absolute or relative path) where the result of the capture is going to be printed
+        /// * `dev`: Device identification number [an integer value ranging from 0 onwards which corresponds to a network device interface]
+        /// * `time_interval`: Sniffing Duration (secs)
+        /// * `filter`: A filter (syntax is available at https://biot.com/capstats/bpf.html),
+        /// #
+        /// Please notice that the result of the capture is going stored in your working folder, unless a path is provided
         pub fn new(file_name: String, dev: usize, time_interval: f64, filter: String) -> std::result::Result<Self, SnifferError> {
             
             let s= Mutex::new(Status{
@@ -167,30 +226,40 @@ pub mod packet_sniffer {
                 cv: Condvar::new()    
             });
             
-
-            match Device::list() {
+            let devs = Device::list();
+            let dev_name;
+            match devs {
                 Err(_e) => return Err(SnifferError::DevicesListImpossibleToGet),
                 Ok(devs) => {
                     if devs.len() <= dev {
                         return Err(SnifferError::DeviceNotFound)
-                    } 
+                    }
+                    dev_name = devs.get(dev).unwrap().name.clone();
                 }
             }
 
             return Ok(Sniffer {
                 file_name,
-                dev,
+                dev: dev_name,
                 filter,
                 connections: vec![],
                 waiter: wait
             });
         }
-
+        
+    
+    /// Returns nothing (unit) if the function succeds, otherwise returns a 'SnifferError' enum which details 
+    /// the error encountered during the execution
+    /// ```
+    /// sniffer.start_capture();
+    /// ```
+    /// The result of the capture is stored in your working folder when the capture is over or paused
+    /// ```
+    /// ```
+    /// It is possible to pause and resume the capture through the command line,
+    /// by typing "p" and "r" respectively
         pub fn start_capture(& mut self) -> std::result::Result<(), SnifferError>{
-            let devs = Device::list().unwrap();
-            let d = devs.get(self.dev).unwrap();
-            //let mut cap = d.clone().open().unwrap();
-            let mut cap = Capture::from_device(d.name.as_str()).unwrap()
+            let mut cap = Capture::from_device(self.dev.as_str()).unwrap()
                         .promisc(true).timeout(500) //aggiunto timeout di 0.5s
                         .open().map_err(|_| SnifferError::OpenErrorCapture)?;
             cap.filter(&self.filter, true).map_err(|_| SnifferError::InvalidFilter)?;
@@ -198,6 +267,8 @@ pub mod packet_sniffer {
             
             let (sender_end, receiver_end) : (Sender<String>, Receiver<String>) = channel();
             let var= Arc::clone(&self.waiter);
+            println!("> Starting capture from device: {} ...", self.dev); 
+            println!("> Type \"p\" to pause ");
             //TIMER THREAD
             let t=thread::spawn(move || {
                 let w = Arc::clone(&var);
@@ -234,7 +305,6 @@ pub mod packet_sniffer {
                     }
 
                 });
-                
                 loop {
                     let mut s= var.state.lock().unwrap();
                     while s.pause {
@@ -255,26 +325,27 @@ pub mod packet_sniffer {
 
                     s.pause_time=Instant::now();
                     s.time_interval -= (s.pause_time-s.start_time).as_secs_f64();
-
+                    println!("Time left: {:.1} secs", s.time_interval);
+                
                     sender_end.send(String::from("pause")).unwrap();
                 }
             });
             
             //creato questo loop perché il while Ok(cap.next()) usciva dal ciclo quando trovava un errore in pacchetto e non permetteva la synch
             loop {
-                ///////////questo match lo abbiamo messo prima di cap.next
+                
                 match receiver_end.try_recv() {
                     Ok(val) => {
                         match val.as_str(){
                             "timeout" => break,
                             "pause" => {
                                 self.print_connection();
-                                print!("prova.txt printed, work paused!\n> ");
+                                print!("> {} printed, work paused!\n> Type \"r\" to resume\n> ", self.file_name);
                                 stdout().flush().unwrap();
                                 let r = receiver_end.recv().unwrap();
                                 match r.as_str(){
                                     "resume" => {
-                                            print!("RESUME!\n> ");
+                                            print!("RESUME!\n> Type \"p\" to pause\n> ");
                                             stdout().flush().unwrap();
                                     }
                                     _ => ()
@@ -384,17 +455,14 @@ pub mod packet_sniffer {
                     _ => (),
                 }
             }
-            
             println!("Work done!");
             t.join().unwrap();
             self.print_connection();
             return Ok(());
         }
 
-        /*fn pause_capture(&self) {
-            
-        }*/
-
+        
+        /// print_connection creates o overwrite a file writing the result of sniffing
         pub fn print_connection(&self){
             let mut writer= File::create(self.file_name.clone()).unwrap();
 
