@@ -266,13 +266,16 @@ pub mod packet_sniffer {
             
             
             let (sender_end, receiver_end) : (Sender<String>, Receiver<String>) = channel();
+            //cloning sync variable to be able to pass it to the sync thread
             let var= Arc::clone(&self.waiter);
             println!("> Starting capture from device: {} ...", self.dev); 
             println!("> Type \"p\" to pause ");
-            //TIMER THREAD
-            let t=thread::spawn(move || {
+            //TIMER THREAD (2)
+            //"move" allows to use all variables outside the newly created thread
+            let t = thread::spawn(move || {
                 let w = Arc::clone(&var);
-                //USER COMMAND THREAD
+                //USER COMMAND THREAD (3) 
+                // - ttl depends on the father thread (this thread doesn't end on its own, stays in loop forever)
                 thread::spawn(move || {
                     let mut cmd= String::new();
                     loop{
@@ -305,24 +308,30 @@ pub mod packet_sniffer {
                     }
 
                 });
+                //back to timer thread
                 loop {
                     let mut s= var.state.lock().unwrap();
                     while s.pause {
-                        s= var.cv.wait(s).unwrap();
+                        s = var.cv.wait(s).unwrap();
                     }
                     sender_end.send(String::from("resume")).unwrap();
                     s.start_time = Instant::now();
-
+                    
+                    //RUNNING
                     while ! s.pause {
                         let timer= s.time_interval.clone();
+                        //inside function "wait" lock is freed, and is taken back when wait is over
+                        //in fact the lock "s" is passed to the function
                         let res= var.cv.wait_timeout(s, Duration::from_secs(timer as u64)).unwrap();
                         if res.1.timed_out() {
                             sender_end.send(String::from("timeout")).unwrap();
                             return ;
                         }
-                        s = res.0;
+                        s = res.0; //avoids res consumption when while reaches the end
                     }
-
+                    
+                    //PAUSE
+                    //code reached only when mutex is in pause status (sniffer is paused)
                     s.pause_time=Instant::now();
                     s.time_interval -= (s.pause_time-s.start_time).as_secs_f64();
                     println!("Time left: {:.1} secs", s.time_interval);
@@ -427,6 +436,7 @@ pub mod packet_sniffer {
                     
                                 let temp_connection = Connection::new(temp_l3,temp_ip_1,temp_ip_2,temp_l4,temp_port_1,temp_port_2,temp_ts.clone(),temp_ts.clone(),
                                     packet.header.len);
+
                                 let mut found = false;
                                 let mut i: usize=0;
                                 while i < self.connections.len() {
@@ -437,15 +447,7 @@ pub mod packet_sniffer {
                                     }
                                     i+=1;
                                 }
-                                /*for con in self.connections.as_slice(){
-                                    if *con == temp_connection{
-                                        println!("Connection before: {:?}", con);
-                                        (*con).update(temp_ts, packet.header.len);
-                                        println!("Connection after: {:?}", con);
-                                        found = true;
-                                        break;
-                                    }
-                                }*/
+                                
                                 if !found {
                                     self.connections.push(temp_connection);
                                 }
