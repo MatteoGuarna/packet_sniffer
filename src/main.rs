@@ -1,50 +1,28 @@
 mod lib;
 use crate::lib::packet_sniffer::Sniffer;
-use std::env;
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+struct Args {
+    #[clap(short, long, value_parser, default_value_t = 0)]
+    adapter: usize,
+    #[clap(short, long, value_parser, default_value_t = 5.0)]
+    time_interval: f64,
+    #[clap(short, long, value_parser, default_value = "./results.txt")]
+    file_name: String,
+    #[clap(long, value_parser, default_value = "")]
+    filter: String,
+}
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    
-    if args.len() !=4 && args.len() != 5 {
-        eprintln!("Wrong number of arguments in command line: expected -- \"filename\" \"number_of_network_device\" \"timer (seconds)\" \"filter (optional)\"");
-        return ();
-    } 
-
-    let file_name = args[1].clone();
-    
-    let num : usize;
-    match args[2].clone().parse() {
-        Ok(n) => {
-            num = n;
-        },
-        Err(_n) => {
-            eprintln!("Invalid argument (2)");
-            return ;
-        }
-    }
-
-    let time_interval : f64;
-    match args[3].clone().parse() {
-        Ok(t) => {
-            time_interval = t;
-        },
-        Err(_t) => {
-            eprintln!("Invalid argument (3)");
-            return ;
-        }
-    }
-    let mut filter= String::new();
-
-    if args.len() == 5 {
-        filter = args[4].clone();
-    }      
+    let args: Args = Args::parse();  
     
     //doppio match perché sia Sniffer::new che Sniffer::start_capture possono ritornare un errore 
-    let s = Sniffer::new(file_name, num, time_interval,filter);
+    let s = Sniffer::new(args.file_name, args.adapter, args.time_interval, args.filter);
     match s {
         Ok(mut sniffer) => match sniffer.start_capture() {
             Err(e) => eprintln!("{}", e),
-            _ => (),
+            _ => println!("Work done!"),
         },
         Err(e) => eprintln!("{}", e)
     }

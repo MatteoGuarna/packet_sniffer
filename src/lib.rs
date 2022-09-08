@@ -74,7 +74,9 @@ pub mod packet_sniffer {
         port_2: String,
         ts_start: DateTime<Local>,
         ts_end: DateTime<Local>,
-        bytes: u32,
+        bytes_a_to_b: u32,
+        bytes_b_to_a: u32,
+        app_prot: String,
     }
 
     impl Display for IpV {
@@ -105,18 +107,10 @@ pub mod packet_sniffer {
         /// * `port_2`: Port B,
         /// * `ts_start`: Initial Timestamp
         /// * `ts_end`: Final Timestamp
-        /// * `bytes`: Cumulative bytes exchanged by the connection
-        fn new(
-            l3: u8,
-            ip_1: String,
-            ip_2: String,
-            l4: u8,
-            port_1: String,
-            port_2: String,
-            ts_start: DateTime<Local>,
-            ts_end: DateTime<Local>,
-            bytes: u32,
-        ) -> Self {
+        /// * `bytes`: Bytes sent through the first packet
+        /// * `app_prot`: Application level protocol 
+        fn new(l3: u8, ip_1: String, ip_2: String, l4: u8, port_1: String, port_2: String, ts_start: DateTime<Local>, 
+            ts_end: DateTime<Local>, bytes: u32, app_prot: String) -> Self {
             let mut ip = IpV::V4;
 
             if l3 != 4 {
@@ -128,45 +122,36 @@ pub mod packet_sniffer {
                 t = Transport::UDP;
             }
 
-            Self {
-                l3: ip,
-                ip_1,
-                ip_2,
-                l4: t,
-                port_1,
-                port_2,
-                ts_start,
-                ts_end,
-                bytes,
-            }
+            Self { l3: ip, ip_1, ip_2, l4: t, port_1, port_2, ts_start, ts_end, bytes_a_to_b: bytes, bytes_b_to_a: 0, app_prot}
         }
 
         /// Update an istance of a Connection
         /// ## Parameters
         /// * `new_ts_end`: New final Timestamp
         /// * `new_bytes`: New bytes to add in the Connection
-        fn update(&mut self, new_ts_end: DateTime<Local>, new_bytes: u32){
+        /// * `address_a`: Sender address
+        fn update(&mut self, new_ts_end: DateTime<Local>, new_bytes: u32, address_a: String){
+            if address_a == self.ip_1 {
+                self.bytes_a_to_b += new_bytes;
+            }
+            else {
+                self.bytes_b_to_a += new_bytes;
+            }
             self.ts_end = new_ts_end;
-            self.bytes += new_bytes;
         }
     }
 
     impl PartialEq for Connection {
         fn eq(&self, other: &Self) -> bool {
-            if self.l4 == other.l4
-                && (self.ip_1 == other.ip_1
-                    && self.ip_2 == other.ip_2
-                    && self.port_1 == other.port_1
-                    && self.port_2 == other.port_2)
-                || (self.ip_1 == other.ip_2
-                    && self.ip_2 == other.ip_1
-                    && self.port_1 == other.port_2
-                    && self.port_2 == other.port_1)
-            {
-                return true;
-            } else {
-                return false;
-            }
+            return self.l4 == other.l4
+            && (self.ip_1 == other.ip_1
+                && self.ip_2 == other.ip_2
+                && self.port_1 == other.port_1
+                && self.port_2 == other.port_2)
+            || (self.ip_1 == other.ip_2
+                && self.ip_2 == other.ip_1
+                && self.port_1 == other.port_2
+                && self.port_2 == other.port_1)
         }
     }
     /// This struct defines the status of the Sniffer
@@ -385,6 +370,8 @@ pub mod packet_sniffer {
                                 let mut temp_port_1 = "".to_string();
                                 #[allow(unused_assignments)]
                                 let mut temp_port_2 = "".to_string();
+                                #[allow(unused_assignments)]
+                                let mut temp_prot = "".to_string();
                                 if value.ip.is_none() { continue; }
                                 match value.ip.unwrap() {
                                     IpHeader::Version4(h, _e) => {
@@ -434,17 +421,18 @@ pub mod packet_sniffer {
                                     }
                                     _ => continue
                                 }
+                                temp_prot = self.app_prot(temp_l4.clone(), temp_port_1.clone(), temp_port_2.clone());
                                 //salviamo il vettore di connection
-                                let temp_ts= DateTime::from_local(NaiveDateTime::from_timestamp(packet.header.ts.tv_sec as i64, packet.header.ts.tv_usec as u32), *(chrono::Local::now().offset()))+*(chrono::Local::now().offset());
+                                let temp_ts = DateTime::from_local(NaiveDateTime::from_timestamp(packet.header.ts.tv_sec as i64, packet.header.ts.tv_usec as u32), *(chrono::Local::now().offset()))+*(chrono::Local::now().offset());
                     
-                                let temp_connection = Connection::new(temp_l3,temp_ip_1,temp_ip_2,temp_l4,temp_port_1,temp_port_2,temp_ts.clone(),temp_ts.clone(),
-                                    packet.header.len);
+                                let temp_connection = Connection::new(temp_l3,temp_ip_1.clone(),temp_ip_2,temp_l4,temp_port_1,temp_port_2,temp_ts.clone(),temp_ts.clone(),
+                                    packet.header.len,temp_prot);
 
                                 let mut found = false;
                                 let mut i: usize=0;
                                 while i < self.connections.len() {
                                     if self.connections[i] == temp_connection{
-                                        self.connections[i].update(temp_ts, packet.header.len);
+                                        self.connections[i].update(temp_ts, packet.header.len, temp_ip_1);
                                         found = true;
                                         break;
                                     }
@@ -460,44 +448,89 @@ pub mod packet_sniffer {
                     _ => (),
                 }
             }
-            println!("Work done!");
             t.join().unwrap();
             self.print_connection();
             return Ok(());
         }
 
-        
+        fn app_prot(&self, transport_protocol: u8, port_a: String, port_b: String) -> String {
+            if transport_protocol == 0 {
+                return match port_a.as_str() {
+                    "20"|"21" => String::from("FTP"),
+                    "22" => String::from("SSH"),
+                    "25" => String::from("SMTP"),
+                    "53" => String::from("DNS"),
+                    "80" => String::from("HTTP"),
+                    "115" => String::from("SFTP"),
+                    "110" | "995" => String::from("POP3"),
+                    "143" | "220" => String::from("IMAP"),
+                    "443" => String::from("HTTPS"),
+                    "465" => String::from("SMTPS"),
+                    "546" | "547" => String::from("DHCPv6"),
+                    "993" => String::from("IMAPS"),
+                    "5353" => String::from("mDNS"),
+                    _=> { match port_b.as_str(){
+                            "20"|"21" => String::from("FTP"),
+                            "22" => String::from("SSH"),
+                            "53" => String::from("DNS"),
+                            "80" => String::from("HTTP"),
+                            "110" | "995" => String::from("POP3"),
+                            "115" => String::from("SFTP"),
+                            "143" | "220" => String::from("IMAP"),
+                            "443" => String::from("HTTPS"),
+                            "465" => String::from("SMTPS"),
+                            "546" | "547" => String::from("DHCPv6"),
+                            "993" => String::from("IMAPS"),
+                            "5353" => String::from("mDNS"),
+                            _ => String::from("Unknown")
+
+                    }}
+                }
+            } else {
+                return match port_a.as_str() {
+                    "53" => String::from("DNS"),
+                    "67" | "68" => String::from("DHCP"),
+                    "80" => String::from("HTTP"),
+                    "110" | "995" => String::from("POP3"),
+                    "138" => String::from("NetBIOS"),
+                    "220" => String::from("IMAP"),
+                    "443" => String::from("HTTPS"),
+                    "546" | "547" => String::from("DHCPv6"),
+                    "1900" => String::from("SSDP"),
+                    "5353" => String::from("mDNS"),
+                    _=> { 
+                        match port_b.as_str(){
+                            "53" => String::from("DNS"),
+                            "67" | "68" => String::from("DHCP"),
+                            "80" => String::from("HTTP"),
+                            "110" | "995" => String::from("POP3"),
+                            "138" => String::from("NetBIOS"),
+                            "220" => String::from("IMAP"),
+                            "443" => String::from("HTTPS"),
+                            "546" | "547" => String::from("DHCPv6"),
+                            "1900" => String::from("SSDP"),
+                            "5353" => String::from("mDNS"),
+                            _ => String::from("Unknown")
+                        }
+                    }
+                }
+            }
+            
+        }
+
         /// print_connection creates or overwrites a file writing the result of sniffing
-        pub fn print_connection(&self){
+        fn print_connection(&self){
             let mut writer= File::create(self.file_name.clone()).unwrap();
 
          
             let mut i = 1;
             writeln!(writer, " WIRECATFISH packet capture\n").unwrap();
-            writeln!(writer, "| N°   | {0: <11} | {1: <40} | {2: <40} | {3: <18} | {4: <15} | {5: <11} | {6: <19} | {7: <19} | {8: <24} |",
-            "IP Protocol",
-            "Address A",
-            "Address B",
-            "Transport Protocol",
-            "Port A",
-            "Port B", 
-            "Connection Start",
-            "Connection End ",
-            "Data Trasmitted (Bytes)").unwrap();
+            writeln!(writer, "| N°    | {0: <11} | {1: <40} | {2: <40} | {3: <18} | {4: <9} | {5: <9} | {6: <19} | {7: <19} | {8: <21} | {9: <13} | {10: <13} |",
+                "IP Protocol", "Address A", "Address B", "Transport Protocol", "Port A", "Port B",  "Connection Start", "Connection End ", "Application Protocol", "Bytes A->B", "Bytes B->A").unwrap();
 
             for con in self.connections.clone() {
-                writeln!(writer, "| {0: <4} | {1}        | {2: <40} | {3: <40} | {4}                | {5: <15} | {6: <11} | {7: <19} | {8: <19} | {9: <24} |",
-                i,
-                con.l3,
-                con.ip_1,
-                con.ip_2,
-                con.l4,
-                con.port_1,
-                con.port_2, 
-                con.ts_start.format("%Y/%m/%d %H:%M:%S"),
-                con.ts_end.format("%Y/%m/%d %H:%M:%S"),
-                con.bytes
-            ).unwrap();
+                writeln!(writer, "| {0: <5} | {1}        | {2: <40} | {3: <40} | {4}                | {5: <9} | {6: <9} | {7: <19} | {8: <19} | {9: <21} | {10: <13} | {11: <13} |",
+                    i, con.l3, con.ip_1, con.ip_2, con.l4, con.port_1, con.port_2, con.ts_start.format("%Y/%m/%d %H:%M:%S"), con.ts_end.format("%Y/%m/%d %H:%M:%S"), con.app_prot, con.bytes_a_to_b, con.bytes_b_to_a).unwrap();
             i+=1;
             }
         }
