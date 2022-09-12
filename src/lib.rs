@@ -160,7 +160,7 @@ pub mod packet_sniffer {
     /// * `start_time`: Time the sniffer starts / resume to capture
     /// * `pause_time`: Time the sniffer pause the capturing
     /// * `pause`: Pause flag
-    struct Status{
+    struct ExecState{
         time_interval: f64,
         start_time: Instant,
         pause_time: Instant,
@@ -171,8 +171,8 @@ pub mod packet_sniffer {
     /// ## Properties
     /// * `state`: Status of the Sniffer contained in a Mutex lock, even used with the cv
     /// * `cv`: Condition Variable
-    struct Waiting{
-        state: Mutex<Status>,
+    struct SyncStruct{
+        state: Mutex<ExecState>,
         cv: Condvar
     }
    
@@ -188,7 +188,7 @@ pub mod packet_sniffer {
         dev: String,
         filter: String,
         connections: Vec<Connection>,
-        waiter: Arc<Waiting>
+        waiter: Arc<SyncStruct>
     }
 
     impl Sniffer {
@@ -202,14 +202,14 @@ pub mod packet_sniffer {
         /// Please notice that the result of the capture is going stored in your working folder, unless a path is provided
         pub fn new(file_name: String, dev: usize, time_interval: f64, filter: String) -> std::result::Result<Self, SnifferError> {
             
-            let s= Mutex::new(Status{
+            let s= Mutex::new(ExecState{
                 time_interval,
                 start_time: Instant::now(),
                 pause_time: Instant::now(),
                 pause: false
             });
 
-            let wait= Arc::new(Waiting{
+            let wait= Arc::new(SyncStruct{
                 state: s,
                 cv: Condvar::new()    
             });
@@ -255,7 +255,7 @@ pub mod packet_sniffer {
             
             let (sender_end, receiver_end) : (Sender<String>, Receiver<String>) = channel();
             //cloning sync variable to be able to pass it to the sync thread
-            let var= Arc::clone(&self.waiter);
+            let var = Arc::clone(&self.waiter);
             println!("> Starting capture from device: {} ...", self.dev); 
             println!("> Type \"p\" to pause ");
             //TIMER THREAD (2)
@@ -270,11 +270,12 @@ pub mod packet_sniffer {
                         cmd.clear();
                         print!("> ");
                         stdout().flush().expect("Error flushing stdout buffer");
+                        //stdin().read_line è in attesa di comando da std input
                         match stdin().read_line(&mut cmd){
                             Ok(_val) => (),
                             Err(e) => {eprintln!("{}", e); continue}
                         }
-                        let r= cmd.trim();
+                        let r = cmd.trim();
                         match r {
                             "p" => {
                                 let mut res= w.state.lock().unwrap();
@@ -298,7 +299,7 @@ pub mod packet_sniffer {
                 });
                 //back to timer thread
                 loop {
-                    let mut s= var.state.lock().unwrap();
+                    let mut s = var.state.lock().unwrap();
                     while s.pause {
                         s = var.cv.wait(s).unwrap();
                     }
@@ -307,10 +308,10 @@ pub mod packet_sniffer {
                     
                     //RUNNING
                     while ! s.pause {
-                        let timer= s.time_interval.clone();
+                        let timer = s.time_interval.clone();
                         //inside function "wait" lock is freed, and is taken back when wait is over
                         //in fact the lock "s" is passed to the function
-                        let res= var.cv.wait_timeout(s, Duration::from_secs(timer as u64)).unwrap();
+                        let res = var.cv.wait_timeout(s, Duration::from_secs(timer as u64)).unwrap();
                         if res.1.timed_out() {
                             sender_end.send(String::from("timeout")).unwrap();
                             return ;
@@ -331,6 +332,7 @@ pub mod packet_sniffer {
             //creato questo loop perché il while Ok(cap.next()) usciva dal ciclo quando trovava un errore in pacchetto e non permetteva la synch
             loop {
                 
+                //SYNCH MATCH
                 match receiver_end.try_recv() {
                     Ok(val) => {
                         match val.as_str(){
@@ -339,6 +341,7 @@ pub mod packet_sniffer {
                                 self.print_connection();
                                 print!("> {} printed, work paused!\n> Type \"r\" to resume\n> ", self.file_name);
                                 stdout().flush().unwrap();
+                                //recv è bloccante -> il thread principale rimane in attesa passiva sul canale finché il timer thread non comunica "resume"
                                 let r = receiver_end.recv().unwrap();
                                 match r.as_str(){
                                     "resume" => {
